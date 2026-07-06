@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, Platform,
 } from "react-native";
@@ -25,10 +25,27 @@ export default function PlayerScreen() {
     isPlaying, isLoading, isPlayingNoise, isFastForward, isRewind, tapePosition,
     togglePlayPause,
     seekForward, startFastForward, stopFastForward, startRewind, stopRewind, flipSide,
-    currentYoutubeId, youtubePlaying, onYoutubeStateChange, onYoutubeReady, currentTapeName,
+    currentYoutubeId, youtubePlaying, onYoutubeStateChange, onYoutubeReady,
+    youtubeSeekRequest, onYoutubeSeekApplied, currentTapeName,
   } = useAudioPlayerContext();
 
   const ytRef = useRef<YoutubeIframeRef>(null);
+  const ytReadyRef = useRef(false);
+
+  // 영상이 바뀌면 iframe이 다시 로드되므로 ready 상태 초기화
+  useEffect(() => { ytReadyRef.current = false; }, [currentYoutubeId]);
+
+  // FF/REW 착지 위치를 iframe에 적용 (ready 전이면 onReady에서 재시도)
+  const applyYoutubeSeek = useCallback(() => {
+    if (!youtubeSeekRequest || !ytReadyRef.current || !ytRef.current) return;
+    const seconds = youtubeSeekRequest.ms / 1000;
+    try {
+      Promise.resolve(ytRef.current.seekTo(seconds, true)).catch(() => {});
+    } catch {}
+    onYoutubeSeekApplied();
+  }, [youtubeSeekRequest, onYoutubeSeekApplied]);
+
+  useEffect(() => { applyYoutubeSeek(); }, [applyYoutubeSeek]);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
@@ -99,10 +116,13 @@ export default function PlayerScreen() {
             play={youtubePlaying}
             onChangeState={onYoutubeStateChange}
             onReady={() => {
+              ytReadyRef.current = true;
               // 실제 영상 길이로 저장된 duration 보정
               ytRef.current?.getDuration()
                 .then((d) => { if (d) onYoutubeReady(d); })
                 .catch(() => {});
+              // 로드 전에 도착한 seek 요청 적용
+              applyYoutubeSeek();
             }}
             // Android WebView 자동재생 허용 (터치 없이 재생 시작)
             webViewProps={{ mediaPlaybackRequiresUserAction: false }}

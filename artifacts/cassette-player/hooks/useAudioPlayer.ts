@@ -262,6 +262,8 @@ export interface UseAudioPlayerReturn {
   youtubePlaying: boolean;
   onYoutubeStateChange: (state: string) => void;
   onYoutubeReady: (durationSec: number) => void;
+  youtubeSeekRequest: { ms: number; key: number } | null;
+  onYoutubeSeekApplied: () => void;
   // 테이프 컬렉션
   tapes: Tape[];
   currentTapeId: string | null;
@@ -289,6 +291,8 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const [tapePosition, setTapePosition] = useState(0);
   const [currentYoutubeId, setCurrentYoutubeId] = useState<string | null>(null);
   const [youtubePlaying, setYoutubePlaying] = useState(false);
+  // FF/REW 착지 등으로 영상 내 특정 위치에서 재생해야 할 때 player.tsx의 iframe에 전달되는 seek 요청
+  const [youtubeSeekRequest, setYoutubeSeekRequest] = useState<{ ms: number; key: number } | null>(null);
   const [tapes, setTapes] = useState<Tape[]>([]);
   const [currentTapeId, setCurrentTapeId] = useState<string | null>(null);
   const positionRef = useRef(0);
@@ -352,18 +356,22 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   }, []);
 
   // YouTube 재생 중 테이프 위치 실시간 업데이트 (iframe이 position 콜백을 안 주므로 경과시간 기반)
-  const startYoutubeTick = useCallback((baseTapePos: number) => {
+  // trackOffsetMs: 트랙 중간부터 재생 시작할 때(FF/REW 착지, 일시정지 재개) 트랙 내 시작 위치
+  const startYoutubeTick = useCallback((baseTapePos: number, trackOffsetMs = 0) => {
     if (youtubeTickRef.current) clearInterval(youtubeTickRef.current);
     const startedAt = Date.now();
     tapePositionRef.current = baseTapePos;
     setTapePosition(baseTapePos);
+    positionRef.current = trackOffsetMs;
+    setPosition(trackOffsetMs);
     youtubeTickRef.current = setInterval(() => {
       if (cancelRef.current) return;
       const elapsed = Date.now() - startedAt;
       const next = Math.min(baseTapePos + elapsed, MAX_SIDE_MS);
       tapePositionRef.current = next;
       setTapePosition(next);
-      setPosition(elapsed);
+      positionRef.current = trackOffsetMs + elapsed;
+      setPosition(trackOffsetMs + elapsed);
     }, 250);
   }, []);
 
@@ -461,6 +469,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     youtubeIdRef.current = null;
     setCurrentYoutubeId(null);
     setYoutubePlaying(false);
+    setYoutubeSeekRequest(null);
     await Promise.all([stopTrack(), stopNoise()]);
     setIsPlaying(false);
     setIsPlayingNoise(false);
@@ -621,8 +630,11 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       setIsPlaying(true);
       wasPlayingRef.current = true;
       acquireWakeLock();
-      const baseTapePos = computeTapePos(sideRef.current, idx, initialPositionMs ?? 0);
-      startYoutubeTick(baseTapePos);
+      const startPos = initialPositionMs ?? 0;
+      const baseTapePos = computeTapePos(sideRef.current, idx, startPos);
+      startYoutubeTick(baseTapePos, startPos);
+      // iframe에 영상 내 시작 위치 전달 (같은 영상 내 FF/REW도 key로 매번 트리거)
+      setYoutubeSeekRequest({ ms: startPos, key: Date.now() });
       startForegroundService(item.title);
     } else {
       setIsPlayingNoise(false);
@@ -732,14 +744,14 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const play = useCallback(async () => {
     if (isPlayingNoise) return;
     if (isPlaying) return;
-    // YouTube 트랙 재개
+    // YouTube 트랙 재개 (영상은 iframe이 멈춘 위치에서 이어감)
     if (currentYoutubeId) {
       cancelRef.current = false;
       setYoutubePlaying(true);
       setIsPlaying(true);
       wasPlayingRef.current = true;
       acquireWakeLock();
-      startYoutubeTick(tapePositionRef.current);
+      startYoutubeTick(tapePositionRef.current, positionRef.current);
       return;
     }
     playClickSound();
@@ -1194,6 +1206,11 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     }
   }, [advance, stopYoutubeTick]);
 
+  // player.tsx가 seek 요청을 iframe에 적용한 뒤 호출 (재적용 방지)
+  const onYoutubeSeekApplied = useCallback(() => {
+    setYoutubeSeekRequest(null);
+  }, []);
+
   // iframe 준비 완료 시 실제 영상 길이로 저장된 duration 보정 (추가 시 조회 실패했던 트랙 자동 복구)
   const onYoutubeReady = useCallback((durationSec: number) => {
     const ms = Math.round(durationSec * 1000);
@@ -1413,6 +1430,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     seekTo, seekForward, seekBackward, startFastForward, stopFastForward, startRewind, stopRewind,
     flipSide, addToSide, addUrlToSide, removeTrackItem, updateNoiseDuration, setSide,
     currentYoutubeId, youtubePlaying, onYoutubeStateChange, onYoutubeReady,
+    youtubeSeekRequest, onYoutubeSeekApplied,
     tapes, currentTapeId, currentTapeName,
     createTape, selectTape, renameTape, deleteTape, importTape,
   };
