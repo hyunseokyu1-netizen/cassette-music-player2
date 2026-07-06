@@ -161,6 +161,27 @@ async function fetchYouTubeTitle(videoId: string): Promise<string | null> {
   return null;
 }
 
+// YouTube 영상 길이(ms) 조회 — Innertube player 엔드포인트 (API key 불필요)
+// 실패 시 0 반환 → 재생 시 iframe의 getDuration()으로 보정됨
+async function fetchYouTubeDuration(videoId: string): Promise<number> {
+  try {
+    const res = await fetch("https://www.youtube.com/youtubei/v1/player", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        context: { client: { clientName: "WEB", clientVersion: "2.20250101.00.00" } },
+        videoId,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const sec = parseInt(data?.videoDetails?.lengthSeconds, 10);
+      if (Number.isFinite(sec) && sec > 0) return sec * 1000;
+    }
+  } catch {}
+  return 0;
+}
+
 function createEmptyTape(name: string): Tape {
   const now = Date.now();
   return { id: genId("tape"), name, sideA: [], sideB: [], createdAt: now, updatedAt: now };
@@ -240,6 +261,7 @@ export interface UseAudioPlayerReturn {
   currentYoutubeId: string | null;
   youtubePlaying: boolean;
   onYoutubeStateChange: (state: string) => void;
+  onYoutubeReady: (durationSec: number) => void;
   // 테이프 컬렉션
   tapes: Tape[];
   currentTapeId: string | null;
@@ -1172,6 +1194,20 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     }
   }, [advance, stopYoutubeTick]);
 
+  // iframe 준비 완료 시 실제 영상 길이로 저장된 duration 보정 (추가 시 조회 실패했던 트랙 자동 복구)
+  const onYoutubeReady = useCallback((durationSec: number) => {
+    const ms = Math.round(durationSec * 1000);
+    if (!ms || ms <= 0) return;
+    const side = sideRef.current;
+    const items = getItems(side);
+    const idx = itemIdxRef.current;
+    const item = items[idx];
+    if (!item || item.type !== "track" || item.sourceType !== "youtube") return;
+    setDuration(ms);
+    if (Math.abs(item.duration - ms) < 1500) return;
+    saveItems(side, items.map((it, i) => (i === idx ? { ...it, duration: ms } : it)));
+  }, [getItems, saveItems]);
+
   // URL(YouTube/직접 스트림) 트랙을 Side에 추가
   const addUrlToSide = useCallback(async (url: string, side: Side, customTitle?: string) => {
     const trimmedUrl = url.trim();
@@ -1186,13 +1222,26 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       const youtubeId = extractYouTubeId(trimmedUrl);
 
       if (youtubeId) {
-        const fetchedTitle = await fetchYouTubeTitle(youtubeId);
+        const [fetchedTitle, duration] = await Promise.all([
+          fetchYouTubeTitle(youtubeId),
+          fetchYouTubeDuration(youtubeId),
+        ]);
         const title = customTitle || fetchedTitle || "YouTube";
+        if (duration > 0) {
+          const addMs = duration + DEFAULT_NOISE_MS + (existing.length === 0 ? DEFAULT_NOISE_MS : 0);
+          if (usedMs + addMs > MAX_SIDE_MS) {
+            Alert.alert(
+              "Time Limit Reached",
+              `Adding this track would exceed the 30-minute limit for Side ${side}.`
+            );
+            return;
+          }
+        }
         track = {
           id: trackId(youtubeId),
           type: "track" as const,
           title,
-          duration: 0, // YouTube는 재생 전까지 시간 미확인
+          duration, // 조회 실패 시 0 → 첫 재생 때 iframe getDuration()으로 보정
           uri: trimmedUrl,
           sourceType: "youtube",
           youtubeId,
@@ -1363,7 +1412,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     playNext, playPrevious, playItemAt,
     seekTo, seekForward, seekBackward, startFastForward, stopFastForward, startRewind, stopRewind,
     flipSide, addToSide, addUrlToSide, removeTrackItem, updateNoiseDuration, setSide,
-    currentYoutubeId, youtubePlaying, onYoutubeStateChange,
+    currentYoutubeId, youtubePlaying, onYoutubeStateChange, onYoutubeReady,
     tapes, currentTapeId, currentTapeName,
     createTape, selectTape, renameTape, deleteTape, importTape,
   };

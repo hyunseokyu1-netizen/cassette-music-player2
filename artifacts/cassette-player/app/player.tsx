@@ -8,7 +8,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import YoutubeIframe from "react-native-youtube-iframe";
+import YoutubeIframe, { YoutubeIframeRef } from "react-native-youtube-iframe";
 import { CassetteTape } from "@/components/CassetteTape";
 import { ControlButtons } from "@/components/ControlButtons";
 import { ProgressBar } from "@/components/ProgressBar";
@@ -25,8 +25,10 @@ export default function PlayerScreen() {
     isPlaying, isLoading, isPlayingNoise, isFastForward, isRewind, tapePosition,
     togglePlayPause,
     seekForward, startFastForward, stopFastForward, startRewind, stopRewind, flipSide,
-    currentYoutubeId, youtubePlaying, onYoutubeStateChange, currentTapeName,
+    currentYoutubeId, youtubePlaying, onYoutubeStateChange, onYoutubeReady, currentTapeName,
   } = useAudioPlayerContext();
+
+  const ytRef = useRef<YoutubeIframeRef>(null);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
@@ -91,10 +93,20 @@ export default function PlayerScreen() {
       {isYouTubeTrack ? (
         <View style={styles.youtubeWrapper}>
           <YoutubeIframe
+            ref={ytRef}
             height={200}
             videoId={currentYoutubeId!}
             play={youtubePlaying}
             onChangeState={onYoutubeStateChange}
+            onReady={() => {
+              // 실제 영상 길이로 저장된 duration 보정
+              ytRef.current?.getDuration()
+                .then((d) => { if (d) onYoutubeReady(d); })
+                .catch(() => {});
+            }}
+            // Android WebView 자동재생 허용 (터치 없이 재생 시작)
+            webViewProps={{ mediaPlaybackRequiresUserAction: false }}
+            initialPlayerParams={{ preventFullScreen: true }}
             webViewStyle={{ opacity: 0.99 }}
           />
           <View style={styles.youtubeBadge}>
