@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { Icon } from "@/components/Icon";
+import { AddUrlModal } from "@/components/AddUrlModal";
 import { useAudioPlayerContext } from "@/contexts/AudioPlayerContext";
 import { SideItem, TrackItem, NoiseItem, Side, MAX_SIDE_MS } from "@/hooks/useAudioPlayer";
 import colors from "@/constants/colors";
@@ -121,11 +122,12 @@ interface SidePanelProps {
   onRemoveTrack: (trackId: string) => void;
   onEditNoise: (noise: NoiseItem) => void;
   onAdd: () => void;
+  onAddUrl: () => void;
 }
 
 function SidePanel({
   side, items, currentSide, currentItemIdx, isPlaying, isPlayingNoise,
-  isAdding, onPlayItem, onRemoveTrack, onEditNoise, onAdd,
+  isAdding, onPlayItem, onRemoveTrack, onEditNoise, onAdd, onAddUrl,
 }: SidePanelProps) {
   const sideColor = side === "A" ? "#9e3c3c" : "#2b5499";
   const used = totalMs(items);
@@ -235,24 +237,37 @@ function SidePanel({
       })}
 
       {!isFull && (
-        <TouchableOpacity
-          style={[styles.addBtn, { borderColor: sideColor }, isAdding && styles.addBtnDisabled]}
-          onPress={onAdd}
-          disabled={isAdding}
-          activeOpacity={0.8}
-        >
-          {isAdding ? (
+        <View style={styles.addBtnGroup}>
+          <TouchableOpacity
+            style={[styles.addBtn, styles.addBtnFlex, { borderColor: sideColor }, isAdding && styles.addBtnDisabled]}
+            onPress={onAdd}
+            disabled={isAdding}
+            activeOpacity={0.8}
+          >
+            {isAdding ? (
+              <View style={styles.addRow}>
+                <ActivityIndicator size="small" color={sideColor} />
+                <Text style={[styles.addTxt, { color: sideColor }]}>Loading…</Text>
+              </View>
+            ) : (
+              <View style={styles.addRow}>
+                <Icon name="plus" size={16} color={sideColor} />
+                <Text style={[styles.addTxt, { color: sideColor }]}>Add Files</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.addBtn, styles.addBtnFlex, { borderColor: sideColor }, isAdding && styles.addBtnDisabled]}
+            onPress={onAddUrl}
+            disabled={isAdding}
+            activeOpacity={0.8}
+          >
             <View style={styles.addRow}>
-              <ActivityIndicator size="small" color={sideColor} />
-              <Text style={[styles.addTxt, { color: sideColor }]}>Loading track durations…</Text>
+              <Icon name="link" size={16} color={sideColor} />
+              <Text style={[styles.addTxt, { color: sideColor }]}>Add URL</Text>
             </View>
-          ) : (
-            <View style={styles.addRow}>
-              <Icon name="plus" size={16} color={sideColor} />
-              <Text style={[styles.addTxt, { color: sideColor }]}>Add Audio Files</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
       )}
 
       {trackCount === 0 && !isAdding && (
@@ -271,10 +286,12 @@ export default function LibraryScreen() {
   const router = useRouter();
   const [tab, setTab] = useState<Side>("A");
   const [editingNoise, setEditingNoise] = useState<{ noise: NoiseItem; side: Side } | null>(null);
+  const [urlModalSide, setUrlModalSide] = useState<Side | null>(null);
 
   const {
     sideA, sideB, currentSide, currentItemIdx, isPlaying, isPlayingNoise, isAdding,
-    playItemAt, addToSide, removeTrackItem, updateNoiseDuration, setSide,
+    playItemAt, addToSide, addUrlToSide, removeTrackItem, updateNoiseDuration, setSide,
+    currentTapeName,
   } = useAudioPlayerContext();
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
@@ -311,7 +328,12 @@ export default function LibraryScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.iconBtn} activeOpacity={0.7}>
           <Icon name="arrow-left" size={22} color={colors.light.cassetteBeige} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>LIBRARY</Text>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle}>LIBRARY</Text>
+          {!!currentTapeName && (
+            <Text style={styles.headerTapeName} numberOfLines={1}>{currentTapeName}</Text>
+          )}
+        </View>
         <View style={styles.iconBtn} />
       </View>
 
@@ -349,6 +371,7 @@ export default function LibraryScreen() {
               onRemoveTrack={(id) => handleRemove("A", id)}
               onEditNoise={(n) => handleEditNoise("A", n)}
               onAdd={() => addToSide("A")}
+              onAddUrl={() => setUrlModalSide("A")}
             />
           : <SidePanel
               side="B" items={bItems}
@@ -358,6 +381,7 @@ export default function LibraryScreen() {
               onRemoveTrack={(id) => handleRemove("B", id)}
               onEditNoise={(n) => handleEditNoise("B", n)}
               onAdd={() => addToSide("B")}
+              onAddUrl={() => setUrlModalSide("B")}
             />
         }
       </ScrollView>
@@ -368,6 +392,14 @@ export default function LibraryScreen() {
         side={editingNoise?.side ?? "A"}
         onSave={updateNoiseDuration}
         onClose={() => setEditingNoise(null)}
+      />
+
+      <AddUrlModal
+        visible={!!urlModalSide}
+        side={urlModalSide ?? "A"}
+        isAdding={isAdding}
+        onAdd={addUrlToSide}
+        onClose={() => setUrlModalSide(null)}
       />
     </View>
   );
@@ -380,9 +412,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 10,
   },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  headerCenter: { flex: 1, alignItems: "center", gap: 2 },
   headerTitle: {
     color: colors.light.mutedForeground, fontSize: 11,
     fontFamily: "Inter_600SemiBold", letterSpacing: 3,
+  },
+  headerTapeName: {
+    color: colors.light.cassetteBeige, fontSize: 12,
+    fontFamily: "Inter_600SemiBold", letterSpacing: 0.3,
   },
   tabs: { flexDirection: "row", borderBottomWidth: 1, borderBottomColor: colors.light.border },
   tab: {
@@ -482,13 +519,15 @@ const styles = StyleSheet.create({
     minWidth: 40,
   },
 
+  addBtnGroup: { flexDirection: "row", gap: 10, marginTop: 16 },
+  addBtnFlex: { flex: 1, marginTop: 0, paddingHorizontal: 12 },
   addBtn: {
-    marginTop: 16, borderWidth: 1.5, borderRadius: 10,
+    borderWidth: 1.5, borderRadius: 10,
     paddingVertical: 14, paddingHorizontal: 20, alignItems: "center",
   },
   addBtnDisabled: { opacity: 0.7 },
   addRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  addTxt: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  addTxt: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   emptyState: { alignItems: "center", paddingVertical: 40, gap: 10 },
   emptyTxt: { color: colors.light.cassetteCream, fontSize: 16, fontFamily: "Inter_600SemiBold" },
   emptyHint: { color: colors.light.mutedForeground, fontSize: 13, fontFamily: "Inter_400Regular" },

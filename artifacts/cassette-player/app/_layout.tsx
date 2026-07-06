@@ -32,6 +32,7 @@ function RootLayoutNav() {
       <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen name="player" options={{ headerShown: false }} />
       <Stack.Screen name="library" options={{ headerShown: false }} />
+      <Stack.Screen name="tapes" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
     </Stack>
   );

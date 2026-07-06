@@ -8,6 +8,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
+import YoutubeIframe from "react-native-youtube-iframe";
 import { CassetteTape } from "@/components/CassetteTape";
 import { ControlButtons } from "@/components/ControlButtons";
 import { ProgressBar } from "@/components/ProgressBar";
@@ -24,6 +25,7 @@ export default function PlayerScreen() {
     isPlaying, isLoading, isPlayingNoise, isFastForward, isRewind, tapePosition,
     togglePlayPause,
     seekForward, startFastForward, stopFastForward, startRewind, stopRewind, flipSide,
+    currentYoutubeId, youtubePlaying, onYoutubeStateChange, currentTapeName,
   } = useAudioPlayerContext();
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
@@ -56,37 +58,67 @@ export default function PlayerScreen() {
   const hasTracks = activeTracks.length > 0;
   const trackTitles = activeTracks.map((t) => t.title);
   const sideColor = currentSide === "A" ? "#c0524a" : "#4a80c0";
+  const isYouTubeTrack = currentTrack?.sourceType === "youtube" && !!currentYoutubeId;
 
   return (
     <View style={[styles.container, { paddingTop: topPad, paddingBottom: bottomPad }]}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.push("/library")} style={styles.btn} activeOpacity={0.7}>
-          <Icon name="list" size={22} color={colors.light.cassetteBeige} />
-        </TouchableOpacity>
+        <View style={styles.headerGroup}>
+          <TouchableOpacity onPress={() => router.push("/tapes")} style={styles.btn} activeOpacity={0.7}>
+            <Icon name="cassette" size={22} color={colors.light.cassetteBeige} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push("/library")} style={styles.btn} activeOpacity={0.7}>
+            <Icon name="list" size={22} color={colors.light.cassetteBeige} />
+          </TouchableOpacity>
+        </View>
         <View style={[styles.sidePill, { borderColor: sideColor }]}>
           <Text style={[styles.sidePillText, { color: sideColor }]}>SIDE {currentSide}</Text>
         </View>
-        <TouchableOpacity onPress={handleFlip} style={styles.btn} activeOpacity={0.7} disabled={false}>
-          <Icon name="refresh-cw" size={20}
-            color={colors.light.cassetteBeige} />
-        </TouchableOpacity>
+        <View style={styles.headerGroup}>
+          <View style={styles.btn} />
+          <TouchableOpacity onPress={handleFlip} style={styles.btn} activeOpacity={0.7} disabled={false}>
+            <Icon name="refresh-cw" size={20}
+              color={colors.light.cassetteBeige} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.cassetteWrapper}>
-        <Animated.View style={animStyle}>
-          <CassetteTape
-            isPlaying={isPlaying}
-            isTransitioning={isPlayingNoise}
-            isFastForward={isFastForward}
-            isRewind={isRewind}
-            progress={tapePosition / (30 * 60 * 1000)}
-            side={currentSide}
-            title={currentTrack?.title ?? ""}
-            tracks={trackTitles}
-            width={320}
+      {!!currentTapeName && (
+        <Text style={styles.tapeNameLabel} numberOfLines={1}>{currentTapeName}</Text>
+      )}
+
+      {/* YouTube 트랙일 때는 카세트 대신 iframe 플레이어 표시 */}
+      {isYouTubeTrack ? (
+        <View style={styles.youtubeWrapper}>
+          <YoutubeIframe
+            height={200}
+            videoId={currentYoutubeId!}
+            play={youtubePlaying}
+            onChangeState={onYoutubeStateChange}
+            webViewStyle={{ opacity: 0.99 }}
           />
-        </Animated.View>
-      </View>
+          <View style={styles.youtubeBadge}>
+            <Icon name="youtube" size={13} color="#ff3b30" />
+            <Text style={styles.youtubeBadgeText}>YouTube</Text>
+          </View>
+        </View>
+      ) : (
+        <View style={styles.cassetteWrapper}>
+          <Animated.View style={animStyle}>
+            <CassetteTape
+              isPlaying={isPlaying}
+              isTransitioning={isPlayingNoise}
+              isFastForward={isFastForward}
+              isRewind={isRewind}
+              progress={tapePosition / (30 * 60 * 1000)}
+              side={currentSide}
+              title={currentTrack?.title ?? ""}
+              tracks={trackTitles}
+              width={320}
+            />
+          </Animated.View>
+        </View>
+      )}
 
       <View style={styles.trackInfo}>
         <Text style={styles.trackTitle} numberOfLines={2}>
@@ -135,9 +167,36 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 10,
   },
   btn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  headerGroup: { flexDirection: "row", alignItems: "center" },
   sidePill: { borderWidth: 1.5, borderRadius: 20, paddingHorizontal: 16, paddingVertical: 4 },
   sidePillText: { fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 2 },
+  tapeNameLabel: {
+    color: colors.light.mutedForeground, fontSize: 11,
+    fontFamily: "Inter_600SemiBold", letterSpacing: 1.5,
+    textAlign: "center", marginBottom: 2, paddingHorizontal: 40,
+  },
   cassetteWrapper: { alignItems: "center", paddingVertical: 10, paddingHorizontal: 18 },
+  youtubeWrapper: {
+    marginHorizontal: 18,
+    marginVertical: 10,
+    borderRadius: 12,
+    overflow: "hidden",
+    backgroundColor: "#000",
+  },
+  youtubeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: "rgba(0,0,0,0.7)",
+  },
+  youtubeBadgeText: {
+    color: "#ff3b30",
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1,
+  },
   trackInfo: {
     paddingHorizontal: 28, alignItems: "center", gap: 6,
     marginBottom: 12, minHeight: 52, justifyContent: "center",

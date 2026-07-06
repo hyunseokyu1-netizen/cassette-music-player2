@@ -40,7 +40,7 @@ async function showPlaybackNotification(title: string) {
     await Notifications.scheduleNotificationAsync({
       identifier: PLAYBACK_NOTIFICATION_ID,
       content: {
-        title: "Cassette Player",
+        title: "Cassette Player 2",
         body: title || "재생 중...",
         sticky: true,
         autoDismiss: false,
@@ -58,7 +58,7 @@ async function updatePlaybackNotification(title: string, isPlaying: boolean) {
     await Notifications.scheduleNotificationAsync({
       identifier: PLAYBACK_NOTIFICATION_ID,
       content: {
-        title: "Cassette Player",
+        title: "Cassette Player 2",
         body: title || "",
         sticky: true,
         autoDismiss: false,
@@ -79,12 +79,16 @@ async function dismissPlaybackNotification() {
 
 export type Side = "A" | "B";
 
+export type TrackSourceType = "local" | "stream" | "youtube";
+
 export interface TrackItem {
   id: string;
   type: "track";
   title: string;
   duration: number;
   uri: string;
+  sourceType?: TrackSourceType;
+  youtubeId?: string;
 }
 
 export interface NoiseItem {
@@ -95,12 +99,26 @@ export interface NoiseItem {
 
 export type SideItem = TrackItem | NoiseItem;
 
+// 카세트 테이프 한 개 = Side A/B 곡 목록을 가진 플레이리스트
+export interface Tape {
+  id: string;
+  name: string;
+  sideA: SideItem[];
+  sideB: SideItem[];
+  createdAt: number;
+  updatedAt: number;
+  sharedFrom?: string; // 공유받은 테이프의 원래 이름 (있으면 표시용)
+}
+
 export const MAX_SIDE_MS = 30 * 60 * 1000;
 export const DEFAULT_NOISE_MS = 2000;
 
+// v1 (단일 테이프) 시절 키 — 최초 실행 시 테이프 컬렉션으로 마이그레이션
 const KEY_A = "@cassette_items_A_v1";
 const KEY_B = "@cassette_items_B_v1";
 const KEY_SIDE = "@cassette_side_v1";
+const KEY_TAPES = "@cassette2_tapes_v1";
+const KEY_CURRENT_TAPE = "@cassette2_current_tape_v1";
 
 function findItemAtTapePosition(items: SideItem[], targetMs: number): { itemIdx: number; offsetMs: number } {
   let elapsed = 0;
@@ -119,6 +137,33 @@ function findItemAtTapePosition(items: SideItem[], targetMs: number): { itemIdx:
 
 function genId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// YouTube URL에서 videoId 추출
+export function extractYouTubeId(url: string): string | null {
+  const match = url.match(
+    /(?:youtube\.com\/(?:watch\?.*v=|shorts\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
+  );
+  return match?.[1] ?? null;
+}
+
+// YouTube oEmbed API로 제목 조회 (API key 불필요)
+async function fetchYouTubeTitle(videoId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`
+    );
+    if (res.ok) {
+      const data = await res.json();
+      return typeof data.title === "string" ? data.title : null;
+    }
+  } catch {}
+  return null;
+}
+
+function createEmptyTape(name: string): Tape {
+  const now = Date.now();
+  return { id: genId("tape"), name, sideA: [], sideB: [], createdAt: now, updatedAt: now };
 }
 function trackId(uri: string) {
   return `track_${uri.replace(/[^a-zA-Z0-9]/g, "").slice(-24)}`;
@@ -187,9 +232,23 @@ export interface UseAudioPlayerReturn {
   stopRewind: () => Promise<void>;
   flipSide: (tapePositionMs?: number) => Promise<void>;
   addToSide: (side: Side) => Promise<void>;
+  addUrlToSide: (url: string, side: Side, customTitle?: string) => Promise<void>;
   removeTrackItem: (side: Side, trackId: string) => void;
   updateNoiseDuration: (side: Side, noiseId: string, ms: number) => void;
   setSide: (side: Side) => void;
+  // YouTube 재생 (player.tsx의 iframe과 연동)
+  currentYoutubeId: string | null;
+  youtubePlaying: boolean;
+  onYoutubeStateChange: (state: string) => void;
+  // 테이프 컬렉션
+  tapes: Tape[];
+  currentTapeId: string | null;
+  currentTapeName: string;
+  createTape: (name: string) => void;
+  selectTape: (id: string) => Promise<void>;
+  renameTape: (id: string, name: string) => void;
+  deleteTape: (id: string) => Promise<void>;
+  importTape: (tape: Tape) => void;
 }
 
 export function useAudioPlayer(): UseAudioPlayerReturn {
@@ -206,6 +265,10 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [tapePosition, setTapePosition] = useState(0);
+  const [currentYoutubeId, setCurrentYoutubeId] = useState<string | null>(null);
+  const [youtubePlaying, setYoutubePlaying] = useState(false);
+  const [tapes, setTapes] = useState<Tape[]>([]);
+  const [currentTapeId, setCurrentTapeId] = useState<string | null>(null);
   const positionRef = useRef(0);
   const durationRef = useRef(0);
   const tapePositionRef = useRef(0); // 노이즈 포함 항상 최신 테이프 위치 추적
@@ -226,11 +289,18 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const sideARef = useRef<SideItem[]>([]);
   const sideBRef = useRef<SideItem[]>([]);
   const cancelRef = useRef(false);
+  const youtubeIdRef = useRef<string | null>(null);
+  const youtubeTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tapesRef = useRef<Tape[]>([]);
+  const currentTapeIdRef = useRef<string | null>(null);
 
   useEffect(() => { itemIdxRef.current = currentItemIdx; }, [currentItemIdx]);
   useEffect(() => { sideRef.current = currentSide; }, [currentSide]);
   useEffect(() => { sideARef.current = sideA; }, [sideA]);
   useEffect(() => { sideBRef.current = sideB; }, [sideB]);
+  useEffect(() => { youtubeIdRef.current = currentYoutubeId; }, [currentYoutubeId]);
+  useEffect(() => { tapesRef.current = tapes; }, [tapes]);
+  useEffect(() => { currentTapeIdRef.current = currentTapeId; }, [currentTapeId]);
 
   const getItems = useCallback((side: Side): SideItem[] =>
     side === "A" ? sideARef.current : sideBRef.current, []);
@@ -259,10 +329,44 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     if (noiseTickRef.current) { clearInterval(noiseTickRef.current); noiseTickRef.current = null; }
   }, []);
 
-  const saveItems = useCallback((side: Side, items: SideItem[]) => {
-    if (side === "A") { setSideA(items); AsyncStorage.setItem(KEY_A, JSON.stringify(items)); }
-    else { setSideB(items); AsyncStorage.setItem(KEY_B, JSON.stringify(items)); }
+  // YouTube 재생 중 테이프 위치 실시간 업데이트 (iframe이 position 콜백을 안 주므로 경과시간 기반)
+  const startYoutubeTick = useCallback((baseTapePos: number) => {
+    if (youtubeTickRef.current) clearInterval(youtubeTickRef.current);
+    const startedAt = Date.now();
+    tapePositionRef.current = baseTapePos;
+    setTapePosition(baseTapePos);
+    youtubeTickRef.current = setInterval(() => {
+      if (cancelRef.current) return;
+      const elapsed = Date.now() - startedAt;
+      const next = Math.min(baseTapePos + elapsed, MAX_SIDE_MS);
+      tapePositionRef.current = next;
+      setTapePosition(next);
+      setPosition(elapsed);
+    }, 250);
   }, []);
+
+  const stopYoutubeTick = useCallback(() => {
+    if (youtubeTickRef.current) { clearInterval(youtubeTickRef.current); youtubeTickRef.current = null; }
+  }, []);
+
+  const persistTapes = useCallback((next: Tape[]) => {
+    tapesRef.current = next;
+    setTapes(next);
+    AsyncStorage.setItem(KEY_TAPES, JSON.stringify(next));
+  }, []);
+
+  // 데크(side A/B) 변경을 현재 테이프에도 반영하여 저장
+  const saveItems = useCallback((side: Side, items: SideItem[]) => {
+    if (side === "A") { setSideA(items); sideARef.current = items; }
+    else { setSideB(items); sideBRef.current = items; }
+    const tid = currentTapeIdRef.current;
+    if (!tid) return;
+    persistTapes(tapesRef.current.map((t) =>
+      t.id === tid
+        ? { ...t, [side === "A" ? "sideA" : "sideB"]: items, updatedAt: Date.now() }
+        : t
+    ));
+  }, [persistTapes]);
 
   useEffect(() => {
     Audio.setAudioModeAsync({
@@ -279,11 +383,34 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
 
   useEffect(() => {
     (async () => {
-      const [a, b, side] = await Promise.all([
+      const [tapesRaw, curId, a, b, side] = await Promise.all([
+        AsyncStorage.getItem(KEY_TAPES), AsyncStorage.getItem(KEY_CURRENT_TAPE),
         AsyncStorage.getItem(KEY_A), AsyncStorage.getItem(KEY_B), AsyncStorage.getItem(KEY_SIDE),
       ]);
-      if (a) setSideA(JSON.parse(a));
-      if (b) setSideB(JSON.parse(b));
+
+      let loadedTapes: Tape[] = [];
+      try { if (tapesRaw) loadedTapes = JSON.parse(tapesRaw); } catch {}
+
+      if (loadedTapes.length === 0) {
+        // 마이그레이션: v1 단일 테이프 데이터(KEY_A/KEY_B)를 첫 테이프로 변환
+        const legacy = createEmptyTape("MY TAPE 01");
+        try { if (a) legacy.sideA = JSON.parse(a); } catch {}
+        try { if (b) legacy.sideB = JSON.parse(b); } catch {}
+        loadedTapes = [legacy];
+        AsyncStorage.setItem(KEY_TAPES, JSON.stringify(loadedTapes));
+      }
+
+      const current = loadedTapes.find((t) => t.id === curId) ?? loadedTapes[0];
+      tapesRef.current = loadedTapes;
+      setTapes(loadedTapes);
+      currentTapeIdRef.current = current.id;
+      setCurrentTapeId(current.id);
+      AsyncStorage.setItem(KEY_CURRENT_TAPE, current.id);
+
+      sideARef.current = current.sideA;
+      sideBRef.current = current.sideB;
+      setSideA(current.sideA);
+      setSideB(current.sideB);
       if (side === "A" || side === "B") setCurrentSide(side as Side);
     })();
     return () => { soundRef.current?.unloadAsync(); noiseRef.current?.unloadAsync(); };
@@ -308,13 +435,17 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     wasPlayingRef.current = false;
     trackEndedRef.current = false;
     releaseWakeLock();
+    stopYoutubeTick();
+    youtubeIdRef.current = null;
+    setCurrentYoutubeId(null);
+    setYoutubePlaying(false);
     await Promise.all([stopTrack(), stopNoise()]);
     setIsPlaying(false);
     setIsPlayingNoise(false);
     setPosition(0);
     setDuration(0);
     stopForegroundService();
-  }, []);
+  }, [stopYoutubeTick]);
 
   // tape-noise.wav 길이 (7.92s). seekMs = NOISE_FILE_MS - durationMs 위치에서
   // 시작하면 durationMs 후 didJustFinish가 자연 발생 → setTimeout 불필요
@@ -454,11 +585,33 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       stopNoiseTick();
       setIsPlayingNoise(false);
       if (done) advance();
+    } else if (item.sourceType === "youtube" && item.youtubeId) {
+      // YouTube 트랙: expo-av 대신 player 화면의 YouTube iframe으로 재생
+      setIsPlayingNoise(false);
+      setIsLoading(false);
+      setPosition(0);
+      setDuration(item.duration || 0);
+      await stopTrack();
+      if (cancelRef.current) return;
+      youtubeIdRef.current = item.youtubeId;
+      setCurrentYoutubeId(item.youtubeId);
+      setYoutubePlaying(true);
+      setIsPlaying(true);
+      wasPlayingRef.current = true;
+      acquireWakeLock();
+      const baseTapePos = computeTapePos(sideRef.current, idx, initialPositionMs ?? 0);
+      startYoutubeTick(baseTapePos);
+      startForegroundService(item.title);
     } else {
       setIsPlayingNoise(false);
       setIsLoading(true);
       setPosition(0);
       setDuration(0);
+      // YouTube 트랙에서 일반 트랙으로 전환 시 정리
+      stopYoutubeTick();
+      youtubeIdRef.current = null;
+      setCurrentYoutubeId(null);
+      setYoutubePlaying(false);
       try {
         await stopTrack();
         if (cancelRef.current) return;
@@ -495,7 +648,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       }
       setIsLoading(false);
     }
-  }, [getItems, advance, onPlaybackStatusUpdate, computeTapePos, startNoiseTick, stopNoiseTick]);
+  }, [getItems, advance, onPlaybackStatusUpdate, computeTapePos, startNoiseTick, stopNoiseTick, startYoutubeTick, stopYoutubeTick]);
 
   useEffect(() => { playItemAtRef.current = playItemAt; }, [playItemAt]);
 
@@ -505,6 +658,8 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       if (nextState !== "active" || cancelRef.current || isFlippingRef.current) return;
       // 명시적으로 정지된 상태(pause/stop)면 복구 불필요
       if (!wasPlayingRef.current) return;
+      // YouTube 재생 중이면 iframe이 자체 관리 → 복구 로직 제외
+      if (youtubeIdRef.current) return;
 
       if (soundRef.current) {
         // Case A: 사운드가 로드됐지만 재생 중이 아님
@@ -555,6 +710,16 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const play = useCallback(async () => {
     if (isPlayingNoise) return;
     if (isPlaying) return;
+    // YouTube 트랙 재개
+    if (currentYoutubeId) {
+      cancelRef.current = false;
+      setYoutubePlaying(true);
+      setIsPlaying(true);
+      wasPlayingRef.current = true;
+      acquireWakeLock();
+      startYoutubeTick(tapePositionRef.current);
+      return;
+    }
     playClickSound();
     await new Promise<void>((r) => setTimeout(r, 60));
     if (soundRef.current) {
@@ -567,12 +732,20 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       cancelRef.current = false;
       await playItemAtRef.current?.(0);
     }
-  }, [isPlaying, isPlayingNoise, getItems]);
+  }, [isPlaying, isPlayingNoise, currentYoutubeId, getItems, startYoutubeTick]);
 
   const pause = useCallback(async () => {
     wasPlayingRef.current = false;
     trackEndedRef.current = false;
     releaseWakeLock();
+    // YouTube 트랙 일시정지
+    if (currentYoutubeId) {
+      stopYoutubeTick();
+      setYoutubePlaying(false);
+      setIsPlaying(false);
+      stopForegroundService();
+      return;
+    }
     if (isPlayingNoise) {
       cancelRef.current = true;
       await stopNoise();
@@ -584,7 +757,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     if (!isPlaying) return;
     await soundRef.current?.pauseAsync();
     setIsPlaying(false);
-  }, [isPlaying, isPlayingNoise, getItems]);
+  }, [isPlaying, isPlayingNoise, currentYoutubeId, getItems, stopYoutubeTick]);
 
   const stopPlayback = useCallback(async () => {
     await cancelAll();
@@ -684,6 +857,11 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       setIsPlayingNoise(false);
       noiseCancelRef.current = false;
     }
+    // YouTube 재생 중이면 iframe 일시정지 (위치 이동 후 playItemAt이 다시 처리)
+    if (youtubeIdRef.current) {
+      stopYoutubeTick();
+      setYoutubePlaying(false);
+    }
     // 현재 절대 테이프 위치 캡처 (노이즈 중에도 tapePositionRef 사용)
     ffTapePosRef.current = tapePositionRef.current;
     // 오디오 일시정지
@@ -748,6 +926,11 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
       stopNoiseTick();
       setIsPlayingNoise(false);
       noiseCancelRef.current = false;
+    }
+    // YouTube 재생 중이면 iframe 일시정지 (위치 이동 후 playItemAt이 다시 처리)
+    if (youtubeIdRef.current) {
+      stopYoutubeTick();
+      setYoutubePlaying(false);
     }
     // 현재 절대 테이프 위치 캡처 (노이즈 중에도 tapePositionRef 사용)
     rwTapePosRef.current = tapePositionRef.current;
@@ -970,6 +1153,169 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     setIsAdding(false);
   }, [getItems, saveItems]);
 
+  // YouTube iframe에서 상태 변경 이벤트 수신 (player.tsx에서 호출)
+  const onYoutubeStateChange = useCallback((state: string) => {
+    if (state === "ended") {
+      stopYoutubeTick();
+      youtubeIdRef.current = null;
+      setCurrentYoutubeId(null);
+      setYoutubePlaying(false);
+      setIsPlaying(false);
+      if (!cancelRef.current) advance();
+    } else if (state === "playing") {
+      setIsPlaying(true);
+      setYoutubePlaying(true);
+      wasPlayingRef.current = true;
+    } else if (state === "paused") {
+      setYoutubePlaying(false);
+      setIsPlaying(false);
+    }
+  }, [advance, stopYoutubeTick]);
+
+  // URL(YouTube/직접 스트림) 트랙을 Side에 추가
+  const addUrlToSide = useCallback(async (url: string, side: Side, customTitle?: string) => {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) return;
+
+    const existing = getItems(side);
+    const usedMs = totalMs(existing);
+
+    setIsAdding(true);
+    try {
+      let track: TrackItem;
+      const youtubeId = extractYouTubeId(trimmedUrl);
+
+      if (youtubeId) {
+        const fetchedTitle = await fetchYouTubeTitle(youtubeId);
+        const title = customTitle || fetchedTitle || "YouTube";
+        track = {
+          id: trackId(youtubeId),
+          type: "track" as const,
+          title,
+          duration: 0, // YouTube는 재생 전까지 시간 미확인
+          uri: trimmedUrl,
+          sourceType: "youtube",
+          youtubeId,
+        };
+      } else {
+        // 직접 스트림 URL
+        const rawName = trimmedUrl.split("/").pop()?.split("?")[0] ?? "stream";
+        const title = customTitle || rawName.replace(/\.[^/.]+$/, "");
+        const duration = await loadFileDuration(trimmedUrl);
+        if (duration === 0) {
+          Alert.alert(
+            "Cannot Load",
+            "Failed to load audio from this URL. Make sure it is a direct audio link (mp3, m4a, etc.)."
+          );
+          return;
+        }
+        const addMs = duration + DEFAULT_NOISE_MS + (existing.length === 0 ? DEFAULT_NOISE_MS : 0);
+        if (usedMs + addMs > MAX_SIDE_MS) {
+          Alert.alert(
+            "Time Limit Reached",
+            `Adding this track would exceed the 30-minute limit for Side ${side}.`
+          );
+          return;
+        }
+        track = {
+          id: trackId(trimmedUrl),
+          type: "track" as const,
+          title,
+          duration,
+          uri: trimmedUrl,
+          sourceType: "stream",
+        };
+      }
+
+      if (existing.find((it) => it.id === track.id)) {
+        Alert.alert("Already Added", "This URL is already in the playlist.");
+        return;
+      }
+
+      const items = [...existing];
+      if (items.length === 0) {
+        items.push({ id: genId("n"), type: "noise", duration: DEFAULT_NOISE_MS });
+        items.push(track);
+        items.push({ id: genId("n"), type: "noise", duration: DEFAULT_NOISE_MS });
+      } else {
+        items.push(track);
+        items.push({ id: genId("n"), type: "noise", duration: DEFAULT_NOISE_MS });
+      }
+      saveItems(side, items);
+    } catch (err) {
+      console.warn("addUrlToSide error:", err);
+      Alert.alert("Error", "Could not add the URL. Please check and try again.");
+    }
+    setIsAdding(false);
+  }, [getItems, saveItems]);
+
+  // ── 테이프 컬렉션 관리 ──────────────────────────────────────
+
+  // 선택한 테이프를 데크에 로드 (재생 중이면 정지)
+  const selectTape = useCallback(async (id: string) => {
+    const tape = tapesRef.current.find((t) => t.id === id);
+    if (!tape) return;
+    await cancelAll();
+    setCurrentItemIdx(-1);
+    itemIdxRef.current = -1;
+    setTapePosition(0);
+    tapePositionRef.current = 0;
+    currentTapeIdRef.current = tape.id;
+    setCurrentTapeId(tape.id);
+    AsyncStorage.setItem(KEY_CURRENT_TAPE, tape.id);
+    sideARef.current = tape.sideA;
+    sideBRef.current = tape.sideB;
+    setSideA(tape.sideA);
+    setSideB(tape.sideB);
+    setCurrentSide("A");
+    sideRef.current = "A";
+    AsyncStorage.setItem(KEY_SIDE, "A");
+  }, [cancelAll]);
+
+  const createTape = useCallback((name: string) => {
+    const tape = createEmptyTape(name.trim() || `MY TAPE ${(tapesRef.current.length + 1).toString().padStart(2, "0")}`);
+    persistTapes([...tapesRef.current, tape]);
+  }, [persistTapes]);
+
+  const renameTape = useCallback((id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    persistTapes(tapesRef.current.map((t) =>
+      t.id === id ? { ...t, name: trimmed, updatedAt: Date.now() } : t
+    ));
+  }, [persistTapes]);
+
+  const deleteTape = useCallback(async (id: string) => {
+    let remaining = tapesRef.current.filter((t) => t.id !== id);
+    if (remaining.length === 0) remaining = [createEmptyTape("MY TAPE 01")];
+    persistTapes(remaining);
+    // 현재 테이프를 지웠으면 첫 번째 테이프를 데크에 로드
+    if (currentTapeIdRef.current === id) {
+      await cancelAll();
+      setCurrentItemIdx(-1);
+      itemIdxRef.current = -1;
+      setTapePosition(0);
+      tapePositionRef.current = 0;
+      const next = remaining[0];
+      currentTapeIdRef.current = next.id;
+      setCurrentTapeId(next.id);
+      AsyncStorage.setItem(KEY_CURRENT_TAPE, next.id);
+      sideARef.current = next.sideA;
+      sideBRef.current = next.sideB;
+      setSideA(next.sideA);
+      setSideB(next.sideB);
+      setCurrentSide("A");
+      sideRef.current = "A";
+      AsyncStorage.setItem(KEY_SIDE, "A");
+    }
+  }, [persistTapes, cancelAll]);
+
+  // 공유받은 테이프를 컬렉션에 추가 (id 충돌 방지를 위해 새 id 부여)
+  const importTape = useCallback((tape: Tape) => {
+    const now = Date.now();
+    persistTapes([...tapesRef.current, { ...tape, id: genId("tape"), createdAt: now, updatedAt: now }]);
+  }, [persistTapes]);
+
   const removeTrackItem = useCallback((side: Side, tId: string) => {
     const items = getItems(side);
     const idx = items.findIndex((it) => it.id === tId);
@@ -1007,6 +1353,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const currentItem = currentItemIdx >= 0 ? activeItems[currentItemIdx] ?? null : null;
   const currentTrack = currentItem?.type === "track" ? currentItem : null;
   const progress = duration > 0 ? position / duration : 0;
+  const currentTapeName = tapes.find((t) => t.id === currentTapeId)?.name ?? "";
 
   return {
     sideA, sideB, currentSide, currentItemIdx, currentTrack,
@@ -1015,6 +1362,9 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     togglePlayPause, play, pause, stopPlayback,
     playNext, playPrevious, playItemAt,
     seekTo, seekForward, seekBackward, startFastForward, stopFastForward, startRewind, stopRewind,
-    flipSide, addToSide, removeTrackItem, updateNoiseDuration, setSide,
+    flipSide, addToSide, addUrlToSide, removeTrackItem, updateNoiseDuration, setSide,
+    currentYoutubeId, youtubePlaying, onYoutubeStateChange,
+    tapes, currentTapeId, currentTapeName,
+    createTape, selectTape, renameTape, deleteTape, importTape,
   };
 }

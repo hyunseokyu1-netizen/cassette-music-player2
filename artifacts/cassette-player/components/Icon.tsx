@@ -5,7 +5,8 @@ type IconName =
   | "skip-back" | "skip-forward" | "rewind" | "fast-forward"
   | "play" | "pause" | "arrow-left" | "list" | "refresh-cw"
   | "plus" | "x" | "volume-2" | "music" | "folder" | "folder-open"
-  | "trash-2" | "search" | "info" | "check";
+  | "trash-2" | "search" | "info" | "check"
+  | "link" | "youtube" | "share-2" | "download" | "edit-3" | "cassette";
 
 interface IconProps {
   name: IconName;
@@ -147,6 +148,54 @@ export function Icon({ name, size = 24, color = "#fff", strokeWidth = 2 }: IconP
         return (
           <G {...props}>
             <Path d="M20 6L9 17l-5-5" />
+          </G>
+        );
+      case "link":
+        return (
+          <G {...props}>
+            <Path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+            <Path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
+          </G>
+        );
+      case "youtube":
+        return (
+          <G {...props}>
+            <Path d="M22.54 6.42a2.78 2.78 0 00-1.95-1.96C18.88 4 12 4 12 4s-6.88 0-8.59.46A2.78 2.78 0 001.46 6.42 29 29 0 001 12a29 29 0 00.46 5.58 2.78 2.78 0 001.95 1.96C5.12 20 12 20 12 20s6.88 0 8.59-.46a2.78 2.78 0 001.95-1.96A29 29 0 0023 12a29 29 0 00-.46-5.58z" strokeWidth={sw} />
+            <Path d="M9.75 15.02l5.75-3.02-5.75-3.02v6.04z" fill={color} stroke={color} strokeWidth={sw * 0.5} />
+          </G>
+        );
+      case "share-2":
+        return (
+          <G {...props}>
+            <Circle cx={18} cy={5} r={3} />
+            <Circle cx={6} cy={12} r={3} />
+            <Circle cx={18} cy={19} r={3} />
+            <Path d="M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98" />
+          </G>
+        );
+      case "download":
+        return (
+          <G {...props}>
+            <Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+            <Path d="M7 10l5 5 5-5" />
+            <Path d="M12 15V3" />
+          </G>
+        );
+      case "edit-3":
+        return (
+          <G {...props}>
+            <Path d="M12 20h9" />
+            <Path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z" />
+          </G>
+        );
+      case "cassette":
+        return (
+          <G {...props}>
+            <Path d="M2 6a2 2 0 012-2h16a2 2 0 012 2v12a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+            <Circle cx={8} cy={11} r={2} />
+            <Circle cx={16} cy={11} r={2} />
+            <Path d="M10 11h4" />
+            <Path d="M7 20l1.5-3h7L17 20" />
           </G>
         );
       default:
