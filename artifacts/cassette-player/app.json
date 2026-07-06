@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Cassette Tape Music Player",
-    "slug": "cassette-player",
-    "version": "1.0.1",
+    "name": "Cassette Player 2",
+    "slug": "cassette-player2",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "cassette-player",
+    "scheme": "cassette-player2",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
@@ -26,7 +26,7 @@
         "android.permission.WAKE_LOCK",
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
-      "package": "com.hscassette.player",
+      "package": "com.hscassette.player2",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#f5e6c8"

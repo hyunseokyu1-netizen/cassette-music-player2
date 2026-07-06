@@ -1,6 +1,6 @@
-# Cassette — No Skip
+# Cassette 2 — No Skip, Now Shareable
 
-> A retro cassette tape music player for Android. No skip button. No algorithm. Just your music, played all the way through.
+> A retro cassette tape music player for Android. No skip button. No algorithm. Build mixtapes from YouTube links, keep a shelf of tapes, and share them with friends.
 
 [한국어 README →](./README.ko.md)
 
