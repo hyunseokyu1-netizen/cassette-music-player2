@@ -111,11 +111,12 @@ export function encodeTapeShare(tape: Tape): TapeShareResult {
   const aCount = countTracks(a.items);
   const bCount = countTracks(b.items);
   const code = SHARE_PREFIX + base64Encode(JSON.stringify(payload));
+  // 공유 문구는 받는 사람의 언어를 알 수 없으므로 앱 UI와 동일하게 영어로 통일
   const text = [
     "📼 Cassette Player 2 — Mixtape",
-    `「${tape.name}」 · Side A ${aCount}곡 / Side B ${bCount}곡`,
+    `「${tape.name}」 · Side A: ${aCount} track${aCount === 1 ? "" : "s"} / Side B: ${bCount} track${bCount === 1 ? "" : "s"}`,
     "",
-    "앱의 [테이프 가져오기]에 아래 코드를 붙여넣으세요.",
+    "Paste this whole message into [Import Tape] in Cassette Player 2.",
     "",
     code,
   ].join("\n");
@@ -143,12 +144,9 @@ function sanitizeItems(items: any): SideItem[] {
   );
 }
 
-// 공유 텍스트에서 테이프 복원. 실패 시 null
-export function decodeTapeShare(text: string): Tape | null {
-  const match = text.match(/CT2:([A-Za-z0-9+/=]+)/);
-  if (!match) return null;
+function tapeFromBase64(b64: string): Tape | null {
   try {
-    const payload = JSON.parse(base64Decode(match[1]));
+    const payload = JSON.parse(base64Decode(b64));
     if (payload?.v !== 1 || typeof payload.name !== "string") return null;
     const now = Date.now();
     return {
@@ -163,4 +161,19 @@ export function decodeTapeShare(text: string): Tape | null {
   } catch {
     return null;
   }
+}
+
+// 공유 텍스트에서 테이프 복원. 실패 시 null
+// 전체 메시지를 그대로 붙여넣어도 CT2 코드 부분만 찾아서 파싱한다.
+// 1차: 한 덩어리 코드(정상 케이스). 2차: 메신저가 긴 코드를 줄바꿈/공백으로
+// 감싼 경우를 대비해 공백 제거 후 재시도.
+export function decodeTapeShare(text: string): Tape | null {
+  const strict = text.match(/CT2:([A-Za-z0-9+/=]+)/)?.[1];
+  const loose = text.match(/CT2:\s*([A-Za-z0-9+/=\s]+)/)?.[1]?.replace(/\s+/g, "");
+  for (const candidate of [strict, loose]) {
+    if (!candidate) continue;
+    const tape = tapeFromBase64(candidate);
+    if (tape) return tape;
+  }
+  return null;
 }

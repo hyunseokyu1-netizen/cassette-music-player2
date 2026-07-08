@@ -88,18 +88,20 @@ interface ImportModalProps {
 function ImportModal({ visible, onImport, onClose }: ImportModalProps) {
   const [text, setText] = useState("");
 
+  // 공유 메시지 전체를 붙여넣어도 CT2 코드만 자동 인식 → 실시간 미리보기
+  const preview = text.trim() ? decodeTapeShare(text) : null;
+
   const handleImport = () => {
-    const tape = decodeTapeShare(text);
-    if (!tape) {
+    if (!preview) {
       Alert.alert("가져오기 실패", "올바른 테이프 코드(CT2:…)를 찾을 수 없습니다. 공유받은 텍스트 전체를 붙여넣어 주세요.");
       return;
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    onImport(tape);
+    onImport(preview);
     setText("");
     onClose();
-    const total = trackCount(tape.sideA) + trackCount(tape.sideB);
-    Alert.alert("테이프 도착 📼", `「${tape.name}」 (${total}곡)이 내 테이프 목록에 추가되었습니다.`);
+    const total = trackCount(preview.sideA) + trackCount(preview.sideB);
+    Alert.alert("테이프 도착 📼", `「${preview.name}」 (${total}곡)이 내 테이프 목록에 추가되었습니다.`);
   };
 
   const handleClose = () => { setText(""); onClose(); };
@@ -125,14 +127,29 @@ function ImportModal({ visible, onImport, onClose }: ImportModalProps) {
             autoCapitalize="none"
             autoCorrect={false}
           />
+          {text.trim().length > 0 && (
+            preview ? (
+              <View style={styles.previewRow}>
+                <Icon name="check" size={14} color="#5a9e5a" />
+                <Text style={styles.previewFound} numberOfLines={1}>
+                  {`「${preview.name}」 · A ${trackCount(preview.sideA)}곡 / B ${trackCount(preview.sideB)}곡`}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.previewRow}>
+                <Icon name="info" size={14} color="#c07040" />
+                <Text style={styles.previewMissing}>테이프 코드(CT2:…)를 아직 찾지 못했어요</Text>
+              </View>
+            )
+          )}
           <View style={styles.modalActions}>
             <TouchableOpacity style={styles.modalCancelBtn} onPress={handleClose} activeOpacity={0.7}>
               <Text style={styles.modalCancelTxt}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.modalSubmitBtn, !text.trim() && { opacity: 0.4 }]}
+              style={[styles.modalSubmitBtn, !preview && { opacity: 0.4 }]}
               onPress={handleImport}
-              disabled={!text.trim()}
+              disabled={!preview}
               activeOpacity={0.8}
             >
               <Text style={styles.modalSubmitTxt}>Import</Text>
@@ -400,6 +417,9 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium", fontSize: 15,
   },
   importInput: { height: 120, paddingTop: 12, textAlignVertical: "top", marginTop: 0 },
+  previewRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
+  previewFound: { flex: 1, color: "#7ab87a", fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  previewMissing: { color: "#c07040", fontSize: 13, fontFamily: "Inter_500Medium" },
   modalActions: { flexDirection: "row", gap: 10, marginTop: 18 },
   modalCancelBtn: {
     flex: 1, paddingVertical: 12, borderRadius: 10,

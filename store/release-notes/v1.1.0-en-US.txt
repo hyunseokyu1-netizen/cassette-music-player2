@@ -1,0 +1,7 @@
+🎵 What's New in v1.1.0
+
+- Add any song by pasting a YouTube link
+- Create and manage multiple cassette tapes (MY TAPES)
+- Share your finished tape with a code, and import tapes your friends share with you
+
+Same no-skip, tape-noise listening experience you love — now with more ways to build and share your mixtapes.

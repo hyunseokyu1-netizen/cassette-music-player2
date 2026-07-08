@@ -4,7 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as Notifications from "expo-notifications";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, AppState, Platform } from "react-native";
+import { Alert, AppState, Platform, ToastAndroid } from "react-native";
 import { acquireWakeLock, releaseWakeLock, startForegroundService, stopForegroundService } from "@/utils/wakeLock";
 
 // Android Doze 방지용 재생 알림 (Foreground Service 유지)
@@ -40,7 +40,7 @@ async function showPlaybackNotification(title: string) {
     await Notifications.scheduleNotificationAsync({
       identifier: PLAYBACK_NOTIFICATION_ID,
       content: {
-        title: "Cassette Player 2",
+        title: "Cassette Player",
         body: title || "재생 중...",
         sticky: true,
         autoDismiss: false,
@@ -58,7 +58,7 @@ async function updatePlaybackNotification(title: string, isPlaying: boolean) {
     await Notifications.scheduleNotificationAsync({
       identifier: PLAYBACK_NOTIFICATION_ID,
       content: {
-        title: "Cassette Player 2",
+        title: "Cassette Player",
         body: title || "",
         sticky: true,
         autoDismiss: false,
@@ -180,6 +180,13 @@ async function fetchYouTubeDuration(videoId: string): Promise<number> {
     }
   } catch {}
   return 0;
+}
+
+// YouTube 임베드는 앱에서 보내는 재생/정지 명령이 불안정 → 영상 자체 버튼 사용 안내
+function showYoutubeControlHint() {
+  const msg = "YouTube 트랙은 영상 화면의 ▶/⏸ 버튼을 사용하세요";
+  if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
+  else Alert.alert("", msg);
 }
 
 function createEmptyTape(name: string): Tape {
@@ -602,6 +609,11 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     itemIdxRef.current = idx;
 
     if (item.type === "noise") {
+      // 노이즈 구간에서는 YouTube 상태를 완전히 정리 (FF/REW로 youtube에서 noise로 착지한 경우 등)
+      stopYoutubeTick();
+      youtubeIdRef.current = null;
+      setCurrentYoutubeId(null);
+      setYoutubePlaying(false);
       setIsPlayingNoise(true);
       setIsPlaying(true);
       wasPlayingRef.current = true;
@@ -619,7 +631,7 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
     } else if (item.sourceType === "youtube" && item.youtubeId) {
       // YouTube 트랙: expo-av 대신 player 화면의 YouTube iframe으로 재생
       setIsPlayingNoise(false);
-      setIsLoading(false);
+      setIsLoading(true); // 임베드 로드가 느릴 수 있음 → playing 이벤트에서 해제
       setPosition(0);
       setDuration(item.duration || 0);
       await stopTrack();
@@ -744,14 +756,10 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const play = useCallback(async () => {
     if (isPlayingNoise) return;
     if (isPlaying) return;
-    // YouTube 트랙 재개 (영상은 iframe이 멈춘 위치에서 이어감)
+    // YouTube 트랙: 앱 버튼 대신 영상 화면의 버튼 사용 안내
+    // (재개/일시정지는 iframe 이벤트("playing"/"paused")로 앱 상태에 동기화됨)
     if (currentYoutubeId) {
-      cancelRef.current = false;
-      setYoutubePlaying(true);
-      setIsPlaying(true);
-      wasPlayingRef.current = true;
-      acquireWakeLock();
-      startYoutubeTick(tapePositionRef.current, positionRef.current);
+      showYoutubeControlHint();
       return;
     }
     playClickSound();
@@ -769,17 +777,16 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   }, [isPlaying, isPlayingNoise, currentYoutubeId, getItems, startYoutubeTick]);
 
   const pause = useCallback(async () => {
+    // YouTube 트랙: 상태를 건드리지 않고 영상 화면의 버튼 사용 안내
+    // (wakeLock 등 부수효과보다 먼저 확인해야 재생 유지에 영향이 없음)
+    if (currentYoutubeId && !isPlayingNoise) {
+      showYoutubeControlHint();
+      return;
+    }
     wasPlayingRef.current = false;
     trackEndedRef.current = false;
     releaseWakeLock();
-    // YouTube 트랙 일시정지
-    if (currentYoutubeId) {
-      stopYoutubeTick();
-      setYoutubePlaying(false);
-      setIsPlaying(false);
-      stopForegroundService();
-      return;
-    }
+    // 노이즈 재생이 최우선 — YouTube 상태가 남아 있어도 노이즈부터 끊는다
     if (isPlayingNoise) {
       cancelRef.current = true;
       await stopNoise();
@@ -1191,20 +1198,32 @@ export function useAudioPlayer(): UseAudioPlayerReturn {
   const onYoutubeStateChange = useCallback((state: string) => {
     if (state === "ended") {
       stopYoutubeTick();
+      setIsLoading(false);
       youtubeIdRef.current = null;
       setCurrentYoutubeId(null);
       setYoutubePlaying(false);
       setIsPlaying(false);
       if (!cancelRef.current) advance();
     } else if (state === "playing") {
+      setIsLoading(false);
       setIsPlaying(true);
       setYoutubePlaying(true);
       wasPlayingRef.current = true;
+      acquireWakeLock();
+      // 영상 자체 버튼으로 재개한 경우: 멈췄던 테이프 시간을 이어서 진행
+      if (!youtubeTickRef.current) {
+        startYoutubeTick(tapePositionRef.current, positionRef.current);
+      }
     } else if (state === "paused") {
+      setIsLoading(false);
       setYoutubePlaying(false);
       setIsPlaying(false);
+      wasPlayingRef.current = false;
+      // 영상 자체 버튼으로 정지한 경우: 테이프 시간도 멈춤
+      stopYoutubeTick();
+      releaseWakeLock();
     }
-  }, [advance, stopYoutubeTick]);
+  }, [advance, stopYoutubeTick, startYoutubeTick]);
 
   // player.tsx가 seek 요청을 iframe에 적용한 뒤 호출 (재적용 방지)
   const onYoutubeSeekApplied = useCallback(() => {

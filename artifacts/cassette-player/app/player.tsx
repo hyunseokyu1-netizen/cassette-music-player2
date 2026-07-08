@@ -30,22 +30,34 @@ export default function PlayerScreen() {
   } = useAudioPlayerContext();
 
   const ytRef = useRef<YoutubeIframeRef>(null);
-  const ytReadyRef = useRef(false);
+  // seek 요청을 ref로 미러링 — onChangeState 콜백의 stale closure 방지
+  const seekReqRef = useRef(youtubeSeekRequest);
+  useEffect(() => { seekReqRef.current = youtubeSeekRequest; }, [youtubeSeekRequest]);
 
-  // 영상이 바뀌면 iframe이 다시 로드되므로 ready 상태 초기화
-  useEffect(() => { ytReadyRef.current = false; }, [currentYoutubeId]);
+  // seek 이중 적용: 요청 즉시 1차 시도(플레이어가 준비된 경우 바로 반영),
+  // "playing" 이벤트에서 2차 확정(loadVideoById 직후처럼 1차가 무시되는 경우 대비)
+  useEffect(() => {
+    if (!youtubeSeekRequest || !ytRef.current) return;
+    if (youtubeSeekRequest.ms > 500) {
+      try {
+        Promise.resolve(ytRef.current.seekTo(youtubeSeekRequest.ms / 1000, true)).catch(() => {});
+      } catch {}
+    }
+  }, [youtubeSeekRequest]);
 
-  // FF/REW 착지 위치를 iframe에 적용 (ready 전이면 onReady에서 재시도)
-  const applyYoutubeSeek = useCallback(() => {
-    if (!youtubeSeekRequest || !ytReadyRef.current || !ytRef.current) return;
-    const seconds = youtubeSeekRequest.ms / 1000;
-    try {
-      Promise.resolve(ytRef.current.seekTo(seconds, true)).catch(() => {});
-    } catch {}
-    onYoutubeSeekApplied();
-  }, [youtubeSeekRequest, onYoutubeSeekApplied]);
-
-  useEffect(() => { applyYoutubeSeek(); }, [applyYoutubeSeek]);
+  const handleYtStateChange = useCallback((state: string) => {
+    if (state === "playing" && seekReqRef.current && ytRef.current) {
+      const { ms } = seekReqRef.current;
+      seekReqRef.current = null;
+      onYoutubeSeekApplied();
+      if (ms > 500) {
+        try {
+          Promise.resolve(ytRef.current.seekTo(ms / 1000, true)).catch(() => {});
+        } catch {}
+      }
+    }
+    onYoutubeStateChange(state);
+  }, [onYoutubeStateChange, onYoutubeSeekApplied]);
 
   const topPad = Platform.OS === "web" ? 67 : insets.top;
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
@@ -106,54 +118,62 @@ export default function PlayerScreen() {
         <Text style={styles.tapeNameLabel} numberOfLines={1}>{currentTapeName}</Text>
       )}
 
-      {/* YouTube 트랙일 때는 카세트 대신 iframe 플레이어 표시 */}
-      {isYouTubeTrack ? (
+      {/* 카세트가 항상 메인 비주얼. YouTube 트랙이면 그 아래 작은 영상 창 표시 */}
+      <View style={[styles.cassetteWrapper, isYouTubeTrack && styles.cassetteWrapperCompact]}>
+        <Animated.View style={animStyle}>
+          <CassetteTape
+            isPlaying={isPlaying}
+            isTransitioning={isPlayingNoise}
+            isFastForward={isFastForward}
+            isRewind={isRewind}
+            progress={tapePosition / (30 * 60 * 1000)}
+            side={currentSide}
+            title={currentTrack?.title ?? ""}
+            tracks={trackTitles}
+            width={320}
+          />
+        </Animated.View>
+      </View>
+
+      {isYouTubeTrack && (
         <View style={styles.youtubeWrapper}>
+          {/* YouTube 정책상 임베드는 최소 200x200 유지, 화면에 보여야 재생됨 */}
           <YoutubeIframe
             ref={ytRef}
             height={200}
+            width={356}
             videoId={currentYoutubeId!}
             play={youtubePlaying}
-            onChangeState={onYoutubeStateChange}
+            onChangeState={handleYtStateChange}
             onReady={() => {
-              ytReadyRef.current = true;
               // 실제 영상 길이로 저장된 duration 보정
               ytRef.current?.getDuration()
                 .then((d) => { if (d) onYoutubeReady(d); })
                 .catch(() => {});
-              // 로드 전에 도착한 seek 요청 적용
-              applyYoutubeSeek();
             }}
-            // Android WebView 자동재생 허용 (터치 없이 재생 시작)
-            webViewProps={{ mediaPlaybackRequiresUserAction: false }}
+            webViewProps={{
+              // Android WebView 자동재생 허용 (터치 없이 재생 시작)
+              mediaPlaybackRequiresUserAction: false,
+              // webview 13.x는 RN→WebView postMessage를 document에 전달하지만
+              // 라이브러리는 window에서 수신 → 브리지 없으면 play/pause 명령이 유실됨
+              injectedJavaScript: `
+                document.addEventListener('message', function (e) {
+                  window.dispatchEvent(new MessageEvent('message', { data: e.data }));
+                });
+                true;
+              `,
+            }}
             initialPlayerParams={{ preventFullScreen: true }}
             webViewStyle={{ opacity: 0.99 }}
           />
-          <View style={styles.youtubeBadge}>
-            <Icon name="youtube" size={13} color="#ff3b30" />
-            <Text style={styles.youtubeBadgeText}>YouTube</Text>
-          </View>
-        </View>
-      ) : (
-        <View style={styles.cassetteWrapper}>
-          <Animated.View style={animStyle}>
-            <CassetteTape
-              isPlaying={isPlaying}
-              isTransitioning={isPlayingNoise}
-              isFastForward={isFastForward}
-              isRewind={isRewind}
-              progress={tapePosition / (30 * 60 * 1000)}
-              side={currentSide}
-              title={currentTrack?.title ?? ""}
-              tracks={trackTitles}
-              width={320}
-            />
-          </Animated.View>
         </View>
       )}
+      {isYouTubeTrack && (
+        <Text style={styles.youtubeHint}>재생·일시정지는 영상 화면의 버튼을 사용하세요</Text>
+      )}
 
-      <View style={styles.trackInfo}>
-        <Text style={styles.trackTitle} numberOfLines={2}>
+      <View style={[styles.trackInfo, isYouTubeTrack && styles.trackInfoCompact]}>
+        <Text style={styles.trackTitle} numberOfLines={isYouTubeTrack ? 1 : 2}>
           {currentTrack?.title ?? (isPlayingNoise ? lastTrackTitleRef.current : (hasTracks ? "Tap PLAY to start" : "Open library to add tracks"))}
         </Text>
         <View style={styles.sideRow}>
@@ -169,7 +189,7 @@ export default function PlayerScreen() {
 
       <ProgressBar tapePosition={tapePosition} />
 
-      <View style={styles.controls}>
+      <View style={[styles.controls, isYouTubeTrack && styles.controlsCompact]}>
         <ControlButtons
           isPlaying={isPlaying}
           isLoading={isLoading}
@@ -208,31 +228,30 @@ const styles = StyleSheet.create({
     textAlign: "center", marginBottom: 2, paddingHorizontal: 40,
   },
   cassetteWrapper: { alignItems: "center", paddingVertical: 10, paddingHorizontal: 18 },
+  // YouTube 영상 창이 추가로 표시될 때 세로 공간 확보용 압축 여백
+  cassetteWrapperCompact: { paddingVertical: 2 },
+  youtubeHint: {
+    color: colors.light.mutedForeground, fontSize: 10,
+    fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 2,
+  },
+  // 16:9(356x200)로 레터박스 없이 자연스럽게. 좁은 화면에서는 maxWidth로 좌우만 살짝 크롭
   youtubeWrapper: {
-    marginHorizontal: 18,
-    marginVertical: 10,
-    borderRadius: 12,
+    alignSelf: "center",
+    width: 356,
+    maxWidth: "94%",
+    height: 200,
+    marginBottom: 6,
+    borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "#000",
-  },
-  youtubeBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    backgroundColor: "rgba(0,0,0,0.7)",
-  },
-  youtubeBadgeText: {
-    color: "#ff3b30",
-    fontSize: 11,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 1,
+    borderWidth: 2,
+    borderColor: colors.light.border,
   },
   trackInfo: {
     paddingHorizontal: 28, alignItems: "center", gap: 6,
     marginBottom: 12, minHeight: 52, justifyContent: "center",
   },
+  trackInfoCompact: { marginBottom: 4, minHeight: 40 },
   trackTitle: {
     color: colors.light.cassetteCream, fontSize: 17,
     fontFamily: "Inter_700Bold", textAlign: "center", letterSpacing: 0.4,
@@ -241,6 +260,7 @@ sideRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   sideCount: { fontSize: 11, fontFamily: "Inter_500Medium", color: colors.light.mutedForeground, letterSpacing: 0.5 },
   sideDot: { color: colors.light.mutedForeground, fontSize: 12 },
   controls: { marginTop: 12, marginBottom: 14 },
+  controlsCompact: { marginTop: 4, marginBottom: 8 },
   footer: { alignItems: "center" },
   flipBtn: {
     flexDirection: "row", alignItems: "center", gap: 7,
