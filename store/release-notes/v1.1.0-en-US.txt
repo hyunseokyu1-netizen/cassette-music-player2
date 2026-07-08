@@ -2,6 +2,9 @@
 
 - Add any song by pasting a YouTube link
 - Create and manage multiple cassette tapes (MY TAPES)
-- Share your finished tape with a code, and import tapes your friends share with you
+- Share your tape with a code, and import tapes friends share with you
+  * Only YouTube tracks are shareable — phone files are not included
 
-Same no-skip, tape-noise listening experience you love — now with more ways to build and share your mixtapes.
+Same no-skip, tape-noise experience you love, now with more ways to share mixtapes.
+
+Note: YouTube playback pauses when the screen turns off. Tracks from your own files still play in the background as before.
